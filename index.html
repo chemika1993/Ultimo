@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mando RC Responsive – Coche Chema</title>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 0;
+      padding: 10px;
+      background: #f0f0f0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    h2 {
+      margin-bottom: 10px;
+    }
+
+    #top-buttons {
+      margin-bottom: 10px;
+    }
+
+    .btn {
+      margin: 5px;
+      padding: 10px 18px;
+      font-size: 16px;
+      background: #3498db;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    .btn:hover {
+      background: #2980b9;
+    }
+
+    #panel {
+      display: flex;
+      flex-direction: row;
+      justify-content: space-around;
+      align-items: center;
+      width: 100%;
+      max-width: 800px;
+      padding: 10px;
+    }
+
+    canvas {
+      background: #ffffff;
+      border: 2px solid #ccc;
+      border-radius: 10px;
+      touch-action: none;
+      width: 90vw;
+      max-width: 300px;
+      height: auto;
+      aspect-ratio: 1 / 1;
+    }
+
+    #throttle-area {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      margin-left: 10px;
+    }
+
+    input[type="range"] {
+      writing-mode: bt-lr;
+      -webkit-appearance: slider-vertical;
+      width: 40px;
+      height: 250px;
+      margin: 10px 0;
+    }
+
+    #status {
+      margin-top: 10px;
+      font-style: italic;
+      color: #444;
+    }
+  </style>
+</head>
+<body>
+  <h2>🎮 Mando RC Responsive – Coche Chema</h2>
+
+  <div id="top-buttons">
+    <button class="btn" onclick="send('manual')">Modo Manual</button>
+    <button class="btn" onclick="send('auto')">Modo Auto</button>
+    <button class="btn" onclick="send('parar')">🛑 Parar</button>
+  </div>
+
+  <div id="panel">
+    <canvas id="joystick"></canvas>
+
+    <div id="throttle-area">
+      <input type="range" id="speedSlider" min="0" max="100" value="0" />
+      <p>🚀 <span id="speedVal">0</span>%</p>
+    </div>
+  </div>
+
+  <p id="status">⏳ Conectando al broker MQTT...</p>
+
+  <script>
+    const client = mqtt.connect("wss://broker.emqx.io:8084/mqtt");
+    const status = document.getElementById("status");
+    const canvas = document.getElementById("joystick");
+    const ctx = canvas.getContext("2d");
+    const size = canvas.offsetWidth;
+    canvas.width = size;
+    canvas.height = size;
+
+    const center = { x: size / 2, y: size / 2 };
+    let thumb = { x: center.x, y: center.y };
+    let sending = false;
+    let lastDir = "";
+
+    function drawJoystick() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.beginPath();
+      ctx.arc(center.x, center.y, size * 0.3, 0, 2 * Math.PI);
+      ctx.strokeStyle = "#aaa";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(thumb.x, thumb.y, size * 0.08, 0, 2 * Math.PI);
+      ctx.fillStyle = "#3498db";
+      ctx.fill();
+      ctx.strokeStyle = "#444";
+      ctx.stroke();
+    }
+
+    function send(cmd) {
+      if (client.connected) {
+        client.publish("/chema/coche/control", cmd);
+        status.textContent = "📤 " + cmd;
+      }
+    }
+
+    function getAngle(dx, dy) {
+      const dist = Math.hypot(dx, dy);
+      if (dist < 10) return null;
+      const angle = (Math.atan2(-dy, dx) * 180 / Math.PI + 360) % 360;
+      return Math.round(angle);
+    }
+
+    function updateDir(evt) {
+      const rect = canvas.getBoundingClientRect();
+      const touch = evt.touches ? evt.touches[0] : evt;
+      const x = touch.clientX - rect.left;
+      const y = touch.clientY - rect.top;
+      const dx = x - center.x;
+      const dy = y - center.y;
+      const dist = Math.min(Math.hypot(dx, dy), size * 0.3);
+      const rad = Math.atan2(dy, dx);
+      thumb = {
+        x: center.x + dist * Math.cos(rad),
+        y: center.y + dist * Math.sin(rad)
+      };
+      drawJoystick();
+
+      const angle = getAngle(dx, dy);
+      if (angle !== null && angle !== lastDir) {
+        send(`direccion:${angle}`);
+        lastDir = angle;
+      }
+    }
+
+    function releaseJoystick() {
+      thumb = { ...center };
+      drawJoystick();
+      lastDir = "";
+    }
+
+    canvas.addEventListener("touchstart", updateDir);
+    canvas.addEventListener("touchmove", updateDir);
+    canvas.addEventListener("touchend", releaseJoystick);
+
+    canvas.addEventListener("mousedown", e => { sending = true; updateDir(e); });
+    canvas.addEventListener("mousemove", e => { if (sending) updateDir(e); });
+    canvas.addEventListener("mouseup", () => { sending = false; releaseJoystick(); });
+    canvas.addEventListener("mouseleave", () => { sending = false; releaseJoystick(); });
+
+    const slider = document.getElementById("speedSlider");
+    const speedVal = document.getElementById("speedVal");
+
+    slider.addEventListener("input", () => {
+      const val = slider.value;
+      speedVal.textContent = val;
+      send(`velocidad:${val}`);
+    });
+
+    client.on("connect", () => status.textContent = "✅ Conectado a EMQX");
+    client.on("error", err => status.textContent = "❌ Error: " + err.message);
+    client.on("close", () => status.textContent = "🔌 Desconectado");
+
+    drawJoystick();
+  </script>
+</body>
+</html>
